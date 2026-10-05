@@ -19,14 +19,17 @@ when the user selects a cart (via the ``create_checkout`` tool).
 """
 
 from typing import Any
+import json
+import openai
+from pydantic import TypeAdapter
 
 from a2a.server.tasks.task_updater import TaskUpdater
 from a2a.types import DataPart, Part, Task, TextPart
 from ap2.models.cart import CART_DATA_KEY, Cart
 from ap2.models.payment_request import PaymentItem
 from common import message_utils
+from common.constants import OLLAMA_BASE_URL, OLLAMA_API_KEY, OLLAMA_MODEL
 from common.system_utils import DEBUG_MODE_INSTRUCTIONS
-from google import genai
 from pydantic import ValidationError
 
 from .. import storage
@@ -47,7 +50,7 @@ async def find_items_workflow(
     updater: The task updater to report status.
     current_task: The current task object.
   """
-  llm_client = genai.Client()
+  llm_client = openai.OpenAI(base_url=OLLAMA_BASE_URL, api_key=OLLAMA_API_KEY)
 
   catalog_search = message_utils.find_data_part("catalog_search", data_parts)
   if not catalog_search:
@@ -62,20 +65,41 @@ async def find_items_workflow(
         generate 3 complete, unique and realistic PaymentItem JSON objects.
 
         You MUST exclude all branding from the PaymentItem `label` field.
+        Respond with a JSON array containing exactly 3 items matching the PaymentItem schema.
 
     %s
         """ % DEBUG_MODE_INSTRUCTIONS
 
-  llm_response = llm_client.models.generate_content(
-      model="gemini-3.1-flash-lite-preview",
-      contents=prompt,
-      config={
-          "response_mime_type": "application/json",
-          "response_schema": list[PaymentItem],
-      },
-  )
   try:
-    items: list[PaymentItem] = llm_response.parsed
+    response = llm_client.chat.completions.create(
+        model=OLLAMA_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"}
+    )
+    
+    content = response.choices[0].message.content
+    if not content:
+        raise ValueError("Empty response from LLM")
+        
+    try:
+        data = json.loads(content)
+        if isinstance(data, dict) and len(data) == 1:
+            key = list(data.keys())[0]
+            if isinstance(data[key], list):
+                data = data[key]
+        if not isinstance(data, list):
+            # Try to extract a list if it's wrapped in an object
+            data = [data]
+    except json.JSONDecodeError:
+        # Fallback if the model didn't return perfect JSON
+        import re
+        match = re.search(r'\[.*\]', content, re.DOTALL)
+        if match:
+            data = json.loads(match.group(0))
+        else:
+            raise
+
+    items = TypeAdapter(list[PaymentItem]).validate_python(data)
 
     for i, item in enumerate(items):
       cart = Cart(
@@ -94,7 +118,7 @@ async def find_items_workflow(
         Part(root=DataPart(data={"risk_data": risk_data})),
     ])
     await updater.complete()
-  except ValidationError as e:
+  except (ValidationError, Exception) as e:
     error_message = updater.new_agent_message(
         parts=[Part(root=TextPart(text=f"Invalid product list: {e}"))]
     )
