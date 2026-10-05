@@ -1,19 +1,31 @@
 #!/usr/bin/env python3
-"""HTTP server for simulating merchant-side events. Run on port 8081 (default).
+"""Unified HTTP + MCP server for the Merchant agent.
 
-Examples:
-  curl -X POST
-    "http://localhost:8081/trigger-price-drop?item_id=apple_0&price=5&stock=10"
+Serves two concerns on port 8081:
+  - Webhook routes  (POST /trigger-price-drop, GET /state, GET /health)
+  - FastMCP tools   (StreamableHTTP at /mcp)
+
+The FastMCP app's lifespan is wired into the outer Starlette app so that the
+StreamableHTTPSessionManager task group is properly initialized.
 """
 
 import json
 import os
 import time
 
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+
+import uvicorn
+
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Mount, Route
+
+import server as mcp_module  # provides mcp = FastMCP(...)
 
 
 _TEMP_DB = Path(os.environ.get("TEMP_DB_DIR", ".temp-db"))
@@ -25,151 +37,119 @@ _TRIGGER_STATE_PATH = os.environ.get(
 PORT = int(os.environ.get("MERCHANT_TRIGGER_PORT", "8081"))
 
 
+# ---------------------------------------------------------------------------
+# State helpers
+# ---------------------------------------------------------------------------
+
 def _load_trigger_state_raw() -> dict[str, Any]:
-  if not os.path.exists(_TRIGGER_STATE_PATH):
-    return {}
-  try:
-    with open(_TRIGGER_STATE_PATH) as f:
-      return json.load(f)
-  except (json.JSONDecodeError, OSError):
-    return {}
+    if not os.path.exists(_TRIGGER_STATE_PATH):
+        return {}
+    try:
+        with open(_TRIGGER_STATE_PATH) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
 
 
 def _merge_trigger_state(
     item_id: str, value: float | dict[str, Any]
 ) -> dict[str, Any]:
-  state = _load_trigger_state_raw()
-  state[item_id] = value
-  os.makedirs(os.path.dirname(_TRIGGER_STATE_PATH), exist_ok=True)
-  with open(_TRIGGER_STATE_PATH, "w") as f:
-    json.dump(state, f, indent=2)
-  return state
+    state = _load_trigger_state_raw()
+    state[item_id] = value
+    os.makedirs(os.path.dirname(_TRIGGER_STATE_PATH), exist_ok=True)
+    with open(_TRIGGER_STATE_PATH, "w") as f:
+        json.dump(state, f, indent=2)
+    return state
 
 
-class TriggerHandler(BaseHTTPRequestHandler):
-  """Handles HTTP requests for simulating merchant-side events."""
+# ---------------------------------------------------------------------------
+# Webhook route handlers
+# ---------------------------------------------------------------------------
 
-  def log_message(self, format, *args):
-    print(f"[trigger] {args[0]}")
-
-  def _cors(self) -> None:
-    self.send_header("Access-Control-Allow-Origin", "*")
-    self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-    self.send_header("Access-Control-Allow-Headers", "Content-Type")
-
-  def do_OPTIONS(self) -> None:
-    self.send_response(204)
-    self._cors()
-    self.end_headers()
-
-  def do_POST(self):
-    parsed = urlparse(self.path)
-    qs = parse_qs(parsed.query)
+async def trigger_price_drop(request: Request) -> Response:
+    qs = parse_qs(urlparse(str(request.url)).query)
     item_id = (qs.get("item_id") or [None])[0]
-
     if not item_id:
-      self.send_response(400)
-      self.send_header("Content-Type", "application/json")
-      self._cors()
-      self.end_headers()
-      self.wfile.write(json.dumps({"error": "item_id required"}).encode())
-      return
+        return JSONResponse({"error": "item_id required"}, status_code=400)
 
-    if parsed.path == "/trigger-price-drop":
-      price_str = (qs.get("price") or ["5.0"])[0]
-      price = float(price_str)
-      stock_str = (qs.get("stock") or [None])[0]
-      payload: dict[str, Any] = {"price": price, "_touch": time.time()}
-      if stock_str is not None:
+    price_str = (qs.get("price") or ["5.0"])[0]
+    price = float(price_str)
+    stock_str = (qs.get("stock") or [None])[0]
+    payload: dict[str, Any] = {"price": price, "_touch": time.time()}
+    if stock_str is not None:
         payload["stock"] = max(0, int(stock_str))
-      _merge_trigger_state(item_id, payload)
-      stock_msg = f", stock {payload['stock']}" if "stock" in payload else ""
-      self._json_ok({
-          "ok": True,
-          "item_id": item_id,
-          "price": price,
-          **({"stock": payload["stock"]} if "stock" in payload else {}),
-          "message": (
-              f"Price for {item_id} set to ${price}{stock_msg}. Shopping agent"
-              " sees it on next check_product (web UI may nudge immediately"
-              " via /state poll)."
-          ),
-      })
-      return
-
-    self.send_response(404)
-    self._cors()
-    self.end_headers()
-
-  def _json_ok(self, body: dict[str, Any]) -> None:
-    self.send_response(200)
-    self.send_header("Content-Type", "application/json")
-    self._cors()
-    self.end_headers()
-    self.wfile.write(json.dumps(body).encode())
-
-  def do_GET(self):
-    parsed = urlparse(self.path)
-    qs = parse_qs(parsed.query)
-
-    if parsed.path == "/state":
-      item_id = (qs.get("item_id") or [None])[0]
-      if not item_id:
-        self.send_response(400)
-        self.send_header("Content-Type", "application/json")
-        self._cors()
-        self.end_headers()
-        self.wfile.write(json.dumps({"error": "item_id required"}).encode())
-        return
-      state = _load_trigger_state_raw()
-      entry = state.get(item_id)
-      self.send_response(200)
-      self.send_header("Content-Type", "application/json")
-      self._cors()
-      self.end_headers()
-      self.wfile.write(
-          json.dumps({"item_id": item_id, "entry": entry}).encode()
-      )
-      return
-
-    if parsed.path in ("/", "/health"):
-      self.send_response(200)
-      self.send_header("Content-Type", "application/json")
-      self._cors()
-      self.end_headers()
-      self.wfile.write(
-          json.dumps({
-              "status": "ok",
-              "endpoints": [
-                  (
-                      "POST"
-                      f" http://localhost:{PORT}/trigger-price-drop"
-                      "?item_id=<item_id>&price=<price>[&stock=<stock>]"
-                  ),
-                  f"GET http://localhost:{PORT}/state?item_id=<item_id>",
-              ],
-          }).encode()
-      )
-    else:
-      self.send_response(404)
-      self._cors()
-      self.end_headers()
+    _merge_trigger_state(item_id, payload)
+    stock_msg = f", stock {payload['stock']}" if "stock" in payload else ""
+    return JSONResponse({
+        "ok": True,
+        "item_id": item_id,
+        "price": price,
+        **( {"stock": payload["stock"]} if "stock" in payload else {}),
+        "message": (
+            f"Price for {item_id} set to ${price}{stock_msg}. Shopping agent"
+            " sees it on next check_product (web UI may nudge immediately"
+            " via /state poll)."
+        ),
+    })
 
 
-class ReuseHTTPServer(HTTPServer):
-  allow_reuse_address = True
+async def state_handler(request: Request) -> Response:
+    qs = parse_qs(urlparse(str(request.url)).query)
+    item_id = (qs.get("item_id") or [None])[0]
+    if not item_id:
+        return JSONResponse({"error": "item_id required"}, status_code=400)
+    raw = _load_trigger_state_raw()
+    return JSONResponse({"item_id": item_id, "entry": raw.get(item_id)})
+
+
+async def health(request: Request) -> Response:
+    return JSONResponse({
+        "status": "ok",
+        "endpoints": [
+            f"POST http://localhost:{PORT}/trigger-price-drop"
+            "?item_id=<item_id>&price=<price>[&stock=<stock>]",
+            f"GET  http://localhost:{PORT}/state?item_id=<item_id>",
+            f"POST/GET http://localhost:{PORT}/mcp  (StreamableHTTP MCP)",
+        ],
+    })
+
+
+# ---------------------------------------------------------------------------
+# Build the combined Starlette app with FastMCP lifespan wired in
+# ---------------------------------------------------------------------------
+
+mcp_app = mcp_module.mcp.http_app(path="/")
+
+
+@asynccontextmanager
+async def lifespan(app: Starlette):
+    """Start the FastMCP session manager task group alongside this app."""
+    async with mcp_app.router.lifespan_context(app):
+        yield
+
+
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
+
+routes = [
+    Route("/trigger-price-drop", trigger_price_drop, methods=["POST", "OPTIONS"]),
+    Route("/state", state_handler, methods=["GET", "OPTIONS"]),
+    Route("/", health, methods=["GET"]),
+    Route("/health", health, methods=["GET"]),
+    Mount("/mcp", app=mcp_app),
+]
+
+app = Starlette(
+    routes=routes,
+    lifespan=lifespan,
+    middleware=[
+        Middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+    ]
+)
 
 
 if __name__ == "__main__":
-  try:
-    server = ReuseHTTPServer(("127.0.0.1", PORT), TriggerHandler)
-  except OSError as e:
-    if e.errno == 48:
-      print(
-          f"Error: Port {PORT} is already in use. "
-          f"Kill the process with: lsof -ti:{PORT} | xargs kill -9"
-      )
-    raise
-  print(f"Merchant trigger server: http://localhost:{PORT}/")
-  print(f"State file: {_TRIGGER_STATE_PATH}")
-  server.serve_forever()
+    print(f"Merchant trigger + MCP server: http://localhost:{PORT}/")
+    print(f"  MCP StreamableHTTP endpoint: http://localhost:{PORT}/mcp")
+    print(f"  State file: {_TRIGGER_STATE_PATH}")
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")

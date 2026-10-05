@@ -1,90 +1,99 @@
 #!/usr/bin/env python3
-"""HTTP server for initiating payment processing.
+"""Unified HTTP + MCP server for the Merchant Payment Processor agent.
 
-Run separately on port 8083.
+Serves two concerns on port 8083:
+  - Webhook route   (POST /initiate-payment)
+  - FastMCP tools   (StreamableHTTP at /mcp)
+
+The FastMCP app's lifespan is wired into the outer Starlette app so that the
+StreamableHTTPSessionManager task group is properly initialized.
 """
 
-import asyncio
 import json
 import os
 
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse
+from contextlib import asynccontextmanager
 
-import server as mcp_server
+import uvicorn
+
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Mount, Route
+
+import server as mcp_server  # provides mcp = FastMCP(...)
 
 
 PORT = int(os.environ.get("MERCHANT_PAYMENT_PROCESSOR_TRIGGER_PORT", "8083"))
 
 
-class TriggerHandler(BaseHTTPRequestHandler):
-  """Handles HTTP requests for initiating payment processing."""
+# ---------------------------------------------------------------------------
+# Webhook route handlers
+# ---------------------------------------------------------------------------
 
-  def log_message(self, format, *args):
-    print(f"[trigger] {args[0]}")
-
-  def do_POST(self):
-    parsed = urlparse(self.path)
-    if parsed.path == "/initiate-payment":
-      try:
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length)
+async def initiate_payment(request: Request) -> Response:
+    try:
+        body = await request.body()
         data = json.loads(body) if body else {}
         payment_token = data.get("payment_token")
         checkout_jwt_hash = data.get("checkout_jwt_hash")
         open_checkout_hash = data.get("open_checkout_hash")
-      except json.JSONDecodeError:
-        self.send_response(400)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps({"error": "invalid JSON"}).encode())
-        return
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
 
-      # Check that all required fields are present.
-      for field in [
-          "payment_token",
-          "checkout_jwt_hash",
-          "open_checkout_hash",
-      ]:
+    for field in ["payment_token", "checkout_jwt_hash", "open_checkout_hash"]:
         if not data.get(field):
-          self.send_response(400)
-          self.send_header("Content-Type", "application/json")
-          self.end_headers()
-          self.wfile.write(json.dumps({"error": f"{field} required"}).encode())
-          return
+            return JSONResponse({"error": f"{field} required"}, status_code=400)
 
-      result = asyncio.run(
-          mcp_server.initiate_payment(
-              payment_token,
-              checkout_jwt_hash,
-              open_checkout_hash,
-          )
-      )
-      self.send_response(200)
-      self.send_header("Content-Type", "application/json")
-      self.end_headers()
-      self.wfile.write(json.dumps(result, default=str).encode())
-    else:
-      self.send_response(404)
-      self.end_headers()
+    result = await mcp_server.initiate_payment(
+        payment_token,
+        checkout_jwt_hash,
+        open_checkout_hash,
+    )
+    return Response(
+        content=json.dumps(result, default=str),
+        media_type="application/json"
+    )
 
 
-class ReuseHTTPServer(HTTPServer):
-  allow_reuse_address = True
+async def health(request: Request) -> Response:
+    return JSONResponse({
+        "status": "ok",
+        "endpoints": [
+            f"POST http://localhost:{PORT}/initiate-payment",
+            f"POST/GET http://localhost:{PORT}/mcp  (StreamableHTTP MCP)",
+        ],
+    })
+
+
+# ---------------------------------------------------------------------------
+# Build the combined Starlette app with FastMCP lifespan wired in
+# ---------------------------------------------------------------------------
+
+mcp_app = mcp_server.mcp.http_app(path="/")
+
+
+@asynccontextmanager
+async def lifespan(app: Starlette):
+    """Start the FastMCP session manager task group alongside this app."""
+    async with mcp_app.router.lifespan_context(app):
+        yield
+
+
+routes = [
+    Route("/initiate-payment", initiate_payment, methods=["POST"]),
+    Route("/", health, methods=["GET"]),
+    Route("/health", health, methods=["GET"]),
+    Mount("/mcp", app=mcp_app),
+]
+
+app = Starlette(routes=routes, lifespan=lifespan)
 
 
 if __name__ == "__main__":
-  try:
-    httpd = ReuseHTTPServer(("127.0.0.1", PORT), TriggerHandler)
-  except OSError as e:
-    if e.errno == 48:
-      print(
-          f"Error: Port {PORT} is already in use. "
-          f"Kill the process with: lsof -ti:{PORT} | xargs kill -9"
-      )
-    raise
-  print(
-      "Merchant payment processor trigger server:"
-      f" http://localhost:{PORT}/initiate-payment"
-  )
-  httpd.serve_forever()
+    print(
+        "Merchant payment processor trigger + MCP server:"
+        f" http://localhost:{PORT}/"
+    )
+    print(f"  MCP StreamableHTTP endpoint: http://localhost:{PORT}/mcp")
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
