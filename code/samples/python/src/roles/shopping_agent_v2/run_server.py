@@ -4,6 +4,17 @@
 Logs incoming A2A message/stream requests to LOGS_DIR/shopping-agent.log.
 """
 
+import warnings
+
+# Suppress ADK's verbose [EXPERIMENTAL] notices — the A2A executor is working
+# as intended; these warnings are cosmetic and pollute the logs.
+warnings.filterwarnings(
+    "ignore",
+    message=r"\[EXPERIMENTAL\]",
+    category=UserWarning,
+    module=r"google\.adk\..*",
+)
+
 import json
 import logging
 import os

@@ -13,17 +13,16 @@ connection conflicts (see google/adk-python#712).
 import json
 import logging
 import os
-import sys
-
 from pathlib import Path
 from typing import Any
 
 from google.adk.agents import Agent
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.mcp_tool import McpToolset
-from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
+from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.tool_context import ToolContext
-from mcp import StdioServerParameters
+
+from common.constants import OLLAMA_MODEL
 
 from shopping_agent.mandate_tools import (
   assemble_and_sign_mandates_tool,
@@ -51,45 +50,47 @@ if not _shopping_logger.handlers:
 
 _FLOW = os.environ.get("FLOW", "x402")
 
-_MERCHANT_SERVER = _AP2_ROOT / "merchant_agent_mcp" / "server.py"
+# ---------------------------------------------------------------------------
+# MCP server HTTP endpoints (served by the trigger_server.py processes).
+# Using StreamableHTTP avoids spawning a new stdio subprocess per A2A request.
+# ---------------------------------------------------------------------------
+_MERCHANT_MCP_URL = os.environ.get(
+    "MERCHANT_MCP_URL", "http://localhost:8081/mcp"
+)
 if _FLOW == "x402":
-  _CREDENTIAL_SERVER = _AP2_ROOT / "x402_credentials_provider_mcp" / "server.py"
-  _MERCHANT_PAYMENT_PROCESSOR_SERVER = _AP2_ROOT / "x402_psp_mcp" / "server.py"
+  _CREDENTIAL_MCP_URL = os.environ.get(
+      "CREDENTIAL_MCP_URL", "http://localhost:8082/mcp"
+  )
+  _PAYMENT_PROCESSOR_MCP_URL = os.environ.get(
+      "PAYMENT_PROCESSOR_MCP_URL", "http://localhost:8083/mcp"
+  )
 else:
-  _CREDENTIAL_SERVER = _AP2_ROOT / "credentials_provider_mcp" / "server.py"
-  _MERCHANT_PAYMENT_PROCESSOR_SERVER = (
-      _AP2_ROOT / "merchant_payment_processor_mcp" / "server.py"
+  _CREDENTIAL_MCP_URL = os.environ.get(
+      "CREDENTIAL_MCP_URL", "http://localhost:8082/mcp"
+  )
+  _PAYMENT_PROCESSOR_MCP_URL = os.environ.get(
+      "PAYMENT_PROCESSOR_MCP_URL", "http://localhost:8083/mcp"
   )
 _PROMPTS_DIR = _AGENT_DIR / "prompts"
 
 
-def _make_mcp_toolset(server_path: Path, tool_filter=None) -> McpToolset:
-  """Create an MCP toolset that runs a server via ``uv``.
+def _make_mcp_toolset(url: str, tool_filter=None) -> McpToolset:
+  """Create an MCP toolset connecting via StreamableHTTP.
 
-  Each agent needs its own McpToolset instance — sharing one across
-  agents causes stdio connection conflicts (google/adk-python#712).
+  Using HTTP instead of stdio means the MCP server process is long-lived
+  (the trigger_server.py uvicorn process) and the connection is reused
+  across A2A requests — no subprocess spawning per monitoring poll.
 
   Args:
-      server_path: The path to the MCP server script.
+      url: The StreamableHTTP MCP endpoint URL.
       tool_filter: Optional filter to select specific tools.
 
   Returns:
-      An McpToolset instance configured to run the specified server.
+      An McpToolset instance configured to connect to the given URL.
   """
-  env = os.environ.copy()
-  if "LOGS_DIR" not in env:
-    env["LOGS_DIR"] = str(_AP2_ROOT / ".logs")
-  if "TEMP_DB_DIR" not in env:
-    env["TEMP_DB_DIR"] = str(_AP2_ROOT / ".temp-db")
-
   return McpToolset(
-      connection_params=StdioConnectionParams(
-          server_params=StdioServerParameters(
-              command=sys.executable,
-              args=[server_path.name],
-              cwd=str(server_path.parent),
-              env=env,
-          ),
+      connection_params=StreamableHTTPConnectionParams(
+          url=url,
           timeout=60.0,
       ),
       tool_filter=tool_filter,
@@ -170,7 +171,7 @@ _CONSENT_INSTRUCTION = (_PROMPTS_DIR / "consent_agent.md").read_text()
 _MONITORING_INSTRUCTION = (_PROMPTS_DIR / "monitoring_agent.md").read_text()
 _PURCHASE_INSTRUCTION = (_PROMPTS_DIR / "purchase_agent.md").read_text()
 
-_model = os.environ.get("AGENT_MODEL", "gemini-3.1-flash-lite-preview")
+_model = os.environ.get("AGENT_MODEL", OLLAMA_MODEL)
 
 purchase_agent = Agent(
     name="purchase_agent",
@@ -188,10 +189,10 @@ purchase_agent = Agent(
         create_checkout_presentation,
         create_payment_presentation,
         verify_checkout_receipt,
-        _make_mcp_toolset(_MERCHANT_SERVER),
-        _make_mcp_toolset(_CREDENTIAL_SERVER),
+        _make_mcp_toolset(_MERCHANT_MCP_URL),
+        _make_mcp_toolset(_CREDENTIAL_MCP_URL),
         _make_mcp_toolset(
-            _MERCHANT_PAYMENT_PROCESSOR_SERVER,
+            _PAYMENT_PROCESSOR_MCP_URL,
             tool_filter=lambda tool, ctx=None: tool.name != "initiate_payment",
         ),
     ],
@@ -210,7 +211,7 @@ monitoring_agent = Agent(
     output_key="monitoring_result",
     tools=[
         check_constraints_against_mandate,
-        _make_mcp_toolset(_MERCHANT_SERVER),
+        _make_mcp_toolset(_MERCHANT_MCP_URL),
     ],
     sub_agents=[purchase_agent],
     after_tool_callback=_error_escalation_callback,
@@ -229,7 +230,7 @@ consent_agent = Agent(
     tools=[
         reset_temp_db,
         assemble_and_sign_mandates_tool,
-        _make_mcp_toolset(_MERCHANT_SERVER),
+        _make_mcp_toolset(_MERCHANT_MCP_URL),
     ],
     sub_agents=[monitoring_agent],
     after_tool_callback=_error_escalation_callback,

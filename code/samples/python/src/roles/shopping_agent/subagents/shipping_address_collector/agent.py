@@ -27,13 +27,14 @@ This is just one of many possible approaches.
 """
 
 from common.retrying_llm_agent import RetryingLlmAgent
+from common.constants import OLLAMA_MODEL
 from common.system_utils import DEBUG_MODE_INSTRUCTIONS
 
 from . import tools
 
 
 shipping_address_collector = RetryingLlmAgent(
-    model="gemini-3.1-flash-lite-preview",
+    model=OLLAMA_MODEL,
     name="shipping_address_collector",
     max_retries=5,
     instruction="""

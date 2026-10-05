@@ -641,6 +641,10 @@ def check_constraints_against_mandate(
             'price': price,
             'violations': ['item_not_available'],
             'available': False,
+            'action_required': (
+                "The item is not available. Do NOT transfer to any other agent. "
+                "Emit a monitoring artifact containing the current price and available=false, then STOP."
+            ),
             **constraints,
         }
 

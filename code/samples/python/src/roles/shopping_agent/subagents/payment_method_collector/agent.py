@@ -26,13 +26,14 @@ provider, which is then sent to the merchant agent for payment.
 """
 
 from common.retrying_llm_agent import RetryingLlmAgent
+from common.constants import OLLAMA_MODEL
 from common.system_utils import DEBUG_MODE_INSTRUCTIONS
 
 from . import tools
 
 
 payment_method_collector = RetryingLlmAgent(
-    model="gemini-3.1-flash-lite-preview",
+    model=OLLAMA_MODEL,
     name="payment_method_collector",
     max_retries=5,
     instruction="""

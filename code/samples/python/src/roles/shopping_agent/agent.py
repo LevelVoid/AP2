@@ -23,6 +23,7 @@ efficiency in developing robust LLM agents.
 """
 
 from common.retrying_llm_agent import RetryingLlmAgent
+from common.constants import OLLAMA_MODEL
 from common.system_utils import DEBUG_MODE_INSTRUCTIONS
 
 from . import tools
@@ -35,7 +36,7 @@ from .subagents.shopper.agent import shopper
 
 root_agent = RetryingLlmAgent(
     max_retries=5,
-    model="gemini-3.1-flash-lite-preview",
+    model=OLLAMA_MODEL,
     name="root_agent",
     instruction="""
           You are a shopping agent responsible for helping users find and
