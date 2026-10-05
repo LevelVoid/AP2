@@ -36,7 +36,6 @@ from a2a.server.events.event_queue import EventQueue
 from a2a.server.tasks.task_updater import TaskUpdater
 from a2a.types import Part, Task, TextPart
 from a2a.utils.parts import get_data_parts, get_text_parts
-from google import genai
 
 from common import watch_log
 from common.a2a_extension_utils import EXTENSION_URI
@@ -66,10 +65,9 @@ class BaseServerExecutor(AgentExecutor, abc.ABC):
       self._supported_extension_uris = {ext.uri for ext in supported_extensions}
     else:
       self._supported_extension_uris = set()
-    self._client = genai.Client()
     self._tools = tools
     self._tool_resolver = FunctionCallResolver(
-        self._client, self._tools, system_prompt
+        None, self._tools, system_prompt
     )
     super().__init__()
 

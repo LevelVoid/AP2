@@ -26,3 +26,18 @@ CREDENTIALS_PROVIDER_PAYMENT_RECEIPT_URL = "http://localhost:8082/payment-receip
 MERCHANT_PAYMENT_PROCESSOR_INITIATE_PAYMENT_URL = (
     "http://127.0.0.1:8083/initiate-payment"
 )
+
+# ---------------------------------------------------------------------------
+# Ollama / OpenAI-compatible endpoint configuration
+# ---------------------------------------------------------------------------
+OLLAMA_BASE_URL: str = os.environ.get(
+    "OLLAMA_BASE_URL", "http://localhost:11434/v1"
+)
+OLLAMA_API_KEY: str = os.environ.get("OLLAMA_API_KEY", "ollama")
+
+# Configure Litellm to point to Ollama's OpenAI API format
+os.environ["OPENAI_API_BASE"] = OLLAMA_BASE_URL
+os.environ["OPENAI_API_KEY"] = OLLAMA_API_KEY
+# Use the openai/ prefix so LiteLLM treats it as an OpenAI compatible endpoint
+_raw_model = os.environ.get("OLLAMA_MODEL", "gemma:31b-cloud")
+OLLAMA_MODEL: str = f"openai/{_raw_model}" if not _raw_model.startswith("openai/") else _raw_model
