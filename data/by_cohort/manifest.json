@@ -1,0 +1,35 @@
+{
+  "description": "Cohort-stratified splits of poisoned_catalog.json and user_prompts.json. Each cohort represents a different attack variant (A=benign, B=synonym, C=substitution, D=price-override).",
+  "cohorts": [
+    {
+      "cohort": "A_Exact",
+      "catalog_file": "by_cohort/catalog_A_Exact.json",
+      "prompts_file": "by_cohort/prompts_A_Exact.json",
+      "item_count": 49,
+      "prompt_count": 49
+    },
+    {
+      "cohort": "B_Synonym",
+      "catalog_file": "by_cohort/catalog_B_Synonym.json",
+      "prompts_file": "by_cohort/prompts_B_Synonym.json",
+      "item_count": 49,
+      "prompt_count": 49
+    },
+    {
+      "cohort": "C_Substitution",
+      "catalog_file": "by_cohort/catalog_C_Substitution.json",
+      "prompts_file": "by_cohort/prompts_C_Substitution.json",
+      "item_count": 49,
+      "prompt_count": 49
+    },
+    {
+      "cohort": "D_PriceOverride",
+      "catalog_file": "by_cohort/catalog_D_PriceOverride.json",
+      "prompts_file": "by_cohort/prompts_D_PriceOverride.json",
+      "item_count": 47,
+      "prompt_count": 47
+    }
+  ],
+  "total_items_in_catalog": 194,
+  "total_prompts": 194
+}
