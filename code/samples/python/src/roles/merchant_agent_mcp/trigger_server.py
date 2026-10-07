@@ -102,6 +102,34 @@ async def state_handler(request: Request) -> Response:
     return JSONResponse({"item_id": item_id, "entry": raw.get(item_id)})
 
 
+async def reset_state(request: Request) -> Response:
+    """Clear trigger + inventory so the next benchmark iteration starts clean.
+
+    Does not delete signing keys. Safe to call between iterations while the
+    merchant MCP process is still running — trigger state is re-read from disk
+    on every check_product; inventory overlay forces catalog poison regardless
+    of stale in-memory entries.
+    """
+    os.makedirs(os.path.dirname(_TRIGGER_STATE_PATH) or '.', exist_ok=True)
+    with open(_TRIGGER_STATE_PATH, 'w') as f:
+        json.dump({}, f)
+    inv_path = os.environ.get(
+        'MERCHANT_INVENTORY_PATH',
+        str(_TEMP_DB / 'merchant_inventory.json'),
+    )
+    try:
+        with open(inv_path, 'w') as f:
+            json.dump({}, f)
+    except OSError:
+        pass
+    # Clear in-process inventory cache when merchant MCP shares this process
+    try:
+        mcp_module._TEMP_INVENTORY.clear()
+    except Exception:
+        pass
+    return JSONResponse({'ok': True, 'message': 'trigger + inventory reset'})
+
+
 async def health(request: Request) -> Response:
     return JSONResponse({
         "status": "ok",
@@ -109,6 +137,7 @@ async def health(request: Request) -> Response:
             f"POST http://localhost:{PORT}/trigger-price-drop"
             "?item_id=<item_id>&price=<price>[&stock=<stock>]",
             f"GET  http://localhost:{PORT}/state?item_id=<item_id>",
+            f"POST http://localhost:{PORT}/reset-state",
             f"POST/GET http://localhost:{PORT}/mcp  (StreamableHTTP MCP)",
         ],
     })
@@ -134,6 +163,7 @@ from starlette.middleware.cors import CORSMiddleware
 routes = [
     Route("/trigger-price-drop", trigger_price_drop, methods=["POST", "OPTIONS"]),
     Route("/state", state_handler, methods=["GET", "OPTIONS"]),
+    Route("/reset-state", reset_state, methods=["POST", "OPTIONS"]),
     Route("/", health, methods=["GET"]),
     Route("/health", health, methods=["GET"]),
     Mount("/mcp", app=mcp_app),
