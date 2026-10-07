@@ -47,6 +47,31 @@
   .receipt-body {
     padding: 16px;
 
+    .item-image-wrapper {
+      width: 100%;
+      margin-bottom: 12px;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid #064e3b;
+      background: #040d0b;
+
+      .item-image {
+        display: block;
+        width: 100%;
+        max-height: 160px;
+        object-fit: cover;
+        object-position: center;
+        border-radius: 7px;
+        /* Subtle green tint on dark bg so it blends with the card palette */
+        filter: brightness(0.95) saturate(0.9);
+        transition: filter 0.2s ease;
+
+        &:hover {
+          filter: brightness(1) saturate(1);
+        }
+      }
+    }
+
     .display-name {
       font-family: 'Instrument Serif', serif;
       font-size: 18px;

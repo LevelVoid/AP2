@@ -92,6 +92,16 @@ export interface MandateRequest {
 export interface PurchaseComplete {
   type: "purchase_complete";
   order_id: string;
+  /** Human-readable name of the *actually* purchased item (from verify_checkout_receipt). */
+  item_name?: string;
+  /** Alias for item_name — compatibility with purchase_complete artifact schema. */
+  item_description?: string;
+  /** URL of the purchased item's product image. */
+  image_url?: string;
+  /** Price in minor currency units (cents). */
+  price_cents?: number;
+  /** ISO 4217 currency code (e.g. "USD"). */
+  currency?: string;
   /** The closed payment mandate content (decoded JSON) used for the payment. */
   closed_payment_mandate_content?: Record<string, unknown>;
 }

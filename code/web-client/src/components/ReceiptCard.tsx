@@ -2,8 +2,14 @@ import type { PurchaseComplete } from '../types';
 import './ReceiptCard.scss';
 
 function getAmountCharge(
+  purchase: PurchaseComplete,
   closedMandateContent?: Record<string, unknown>,
 ): number {
+  // Prefer price_cents from verify_checkout_receipt (the actually-charged amount).
+  if (typeof purchase.price_cents === 'number' && purchase.price_cents > 0) {
+    return purchase.price_cents / 100;
+  }
+  // Fall back to the closed payment mandate amount.
   const amountObj = closedMandateContent?.payment_amount as
     | { amount?: number }
     | undefined;
@@ -24,8 +30,22 @@ function getPaymentMethod(
   return 'Card';
 }
 
+/** Resolve the best display name for the purchased item. */
+function getItemDisplayName(
+  purchase: PurchaseComplete,
+  fallbackName?: string,
+): string {
+  return (
+    purchase.item_name ||
+    purchase.item_description ||
+    fallbackName ||
+    'Order'
+  );
+}
+
 interface Props {
   purchase: PurchaseComplete;
+  /** Fallback item name from chat context (lastSelectedItemName). */
   itemName?: string;
 }
 
@@ -33,9 +53,10 @@ export function ReceiptCard({ purchase, itemName }: Props) {
   const closedMandateContent = purchase.closed_payment_mandate_content as
     | Record<string, unknown>
     | undefined;
-  const amount = getAmountCharge(closedMandateContent);
+  const amount = getAmountCharge(purchase, closedMandateContent);
   const paymentMethod = getPaymentMethod(closedMandateContent);
-  const displayName = itemName ?? 'Order';
+  const displayName = getItemDisplayName(purchase, itemName);
+  const imageUrl = purchase.image_url || '';
 
   return (
     <div className="msg-agent receipt-card-container">
@@ -60,12 +81,28 @@ export function ReceiptCard({ purchase, itemName }: Props) {
         </div>
 
         <div className="receipt-body">
+          {/* ── Item image (Task 3) ─────────────────────────────── */}
+          {imageUrl && (
+            <div className="item-image-wrapper">
+              <img
+                className="item-image"
+                src={imageUrl}
+                alt={displayName}
+                onError={(e) => {
+                  (e.target as HTMLImageElement).style.display = 'none';
+                }}
+              />
+            </div>
+          )}
+
+          {/* ── Item name (Task 3) ──────────────────────────────── */}
           <div className="display-name">{displayName}</div>
           <div className="order-id">{purchase.order_id}</div>
 
           <div className="info-grid">
             <div className="grid-item">
               <div className="item-label">Charged</div>
+              {/* ── Price from receipt (Task 3) ────────────────── */}
               <div className="item-value">${amount.toFixed(2)}</div>
             </div>
             <div className="grid-item">
