@@ -717,8 +717,35 @@ def create_checkout_presentation(
     """
     _logger.info('create_checkout_presentation called')
     try:
+        # Prefer a previously persisted checkout JWT when the LLM-relayed
+        # string looks corrupted (non-ASCII / truncated).
+        resolved_jwt = checkout_jwt or ''
+        if tool_context:
+            stored = tool_context.state.get('temp:checkout_jwt', '')
+            if stored and (
+                not resolved_jwt
+                or any(ord(c) > 127 for c in resolved_jwt)
+                or len(stored) > len(resolved_jwt) + 20
+            ):
+                _logger.info(
+                    'create_checkout_presentation: using persisted checkout_jwt '
+                    'from session state (len %d vs arg %d)',
+                    len(stored),
+                    len(resolved_jwt),
+                )
+                resolved_jwt = stored
+            # Also try disk persist keyed by hash
+            if checkout_hash:
+                disk = _load_persisted_mandate(f'checkout_jwt_{checkout_hash}')
+                if disk and (
+                    not resolved_jwt
+                    or any(ord(c) > 127 for c in resolved_jwt)
+                    or len(disk) > len(resolved_jwt) + 20
+                ):
+                    resolved_jwt = disk
+
         payload = CheckoutMandate(
-            checkout_jwt=checkout_jwt,
+            checkout_jwt=resolved_jwt,
             checkout_hash=checkout_hash,
         )
 
@@ -890,16 +917,134 @@ def create_payment_presentation(
         return {'error': 'payment_mandate_failed', 'message': str(e)}
 
 
-def verify_checkout_receipt(
-    checkout_receipt: str,
-) -> dict[str, Any]:
-    """Verifies the checkout receipt returned by the merchant.
+def _decode_jwt_payload(jwt_str: str) -> dict[str, Any]:
+    """Decode the base64url payload of a JWT without verifying the signature.
+
+    Used to extract display fields (item name, price, image) from the
+    checkout receipt for frontend surfacing.
 
     Args:
-        checkout_receipt: The checkout receipt JWT to verify.
+        jwt_str: The JWT string (header.payload.signature).
 
     Returns:
-        A dictionary with the verification result.
+        Decoded payload as a dict, or an empty dict on error.
+    """
+    import base64
+    parts = jwt_str.split('.')
+    if len(parts) < 2:
+        return {}
+    payload_b64 = parts[1]
+    # Add padding if necessary.
+    padded = payload_b64 + '=' * (-len(payload_b64) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(padded).decode('utf-8')
+        return json.loads(decoded)
+    except (ValueError, json.JSONDecodeError) as exc:
+        _logger.warning('_decode_jwt_payload failed: %s', exc)
+        return {}
+
+
+def _extract_receipt_display_fields(
+    checkout_receipt: str,
+    tool_context: 'ToolContext | None' = None,
+) -> dict[str, Any]:
+    """Extract item name, image URL, and price from a checkout receipt JWT.
+
+    The checkout receipt JWT payload contains a ``line_items`` array (AP2
+    Checkout schema). Each entry has an ``item`` sub-object with ``title``
+    and optionally ``image``.  The total is in ``totals[].amount``.
+
+    Also checks session state for ``item_image`` and ``item_name`` set by
+    earlier tools (e.g. assemble_cart / check_product).
+
+    Args:
+        checkout_receipt: The checkout receipt JWT string.
+        tool_context: Optional ADK ToolContext for state access.
+
+    Returns:
+        A dict with keys ``item_name``, ``image_url``, ``price_cents``, and
+        ``currency``.  Unknown fields are empty strings / 0.
+    """
+    payload = _decode_jwt_payload(checkout_receipt)
+
+    # Pull item name from line_items[0].item.title
+    line_items = payload.get('line_items') or []
+    item_name = ''
+    image_url = ''
+    price_cents = 0
+    currency = payload.get('currency', 'USD')
+
+    if line_items:
+        first_li = line_items[0]
+        item_obj = first_li.get('item') or {}
+        item_name = item_obj.get('title') or item_obj.get('name') or ''
+        image_url = item_obj.get('image') or item_obj.get('image_url') or ''
+        price_cents = item_obj.get('price') or 0
+
+    # Total from the checkout totals array
+    totals = payload.get('totals') or []
+    for t in totals:
+        if t.get('type') == 'total':
+            price_cents = t.get('amount') or price_cents
+            break
+
+    # Fall back to session state if available
+    if tool_context:
+        if not item_name:
+            item_name = (
+                tool_context.state.get('item_name')
+                or tool_context.state.get('selected_item_name')
+                or ''
+            )
+        if not image_url:
+            image_url = tool_context.state.get('item_image', '')
+
+    _logger.info(
+        '_extract_receipt_display_fields: item_name=%r image_url=%r price_cents=%s',
+        item_name, image_url, price_cents,
+    )
+    return {
+        'item_name': item_name,
+        'image_url': image_url,
+        'price_cents': price_cents,
+        'currency': currency,
+    }
+
+
+def verify_checkout_receipt(
+    checkout_receipt: str,
+    tool_context: 'ToolContext | None' = None,
+) -> dict[str, Any]:
+    """Verifies the checkout receipt and surfaces purchased item details.
+
+    Unpacks the final checkout receipt JWT, verifies its cryptographic
+    integrity, and returns the purchased item's ``name``, ``image_url``, and
+    ``price`` so the frontend can render them on the "Purchase Complete" card.
+
+    When an IPI (Indirect Prompt Injection) attack succeeds, this function
+    will return the *attacker-substituted* item's metadata (e.g.
+    ``name = "Apple Digital Gift Card"``), making the semantic hijack
+    visible in the Web UI.
+
+    Args:
+        checkout_receipt: The checkout receipt JWT returned by
+            ``complete_checkout``.
+        tool_context: Optional ADK ToolContext (auto-injected by ADK) used
+            to persist the extracted fields in session state and fall back
+            to state for missing image/name data.
+
+    Returns:
+        A dictionary containing:
+          - ``verified`` (bool): True if the receipt passed cryptographic
+            verification.
+          - ``item_name`` (str): Human-readable name of the *actually*
+            purchased item.
+          - ``item_description`` (str): Alias for ``item_name`` for
+            compatibility with the ``purchase_complete`` artifact schema.
+          - ``image_url`` (str): URL of the purchased item's image.
+          - ``price_cents`` (int): Price in minor currency units (cents).
+          - ``currency`` (str): ISO 4217 currency code.
+          - ``error`` (str): Present only if verification failed.
     """
     _logger.info(
         'verify_checkout_receipt called: checkout_receipt=%s', checkout_receipt
@@ -926,4 +1071,23 @@ def verify_checkout_receipt(
     if 'error' in result:
         return result
 
-    return {'verified': True}
+    # --- Task 3: Extract display fields from the receipt JWT --------------------
+    display = _extract_receipt_display_fields(checkout_receipt, tool_context)
+
+    # Persist to session state so the purchase_complete artifact builder can
+    # include them without re-parsing.
+    if tool_context:
+        tool_context.state['receipt_item_name'] = display['item_name']
+        tool_context.state['receipt_image_url'] = display['image_url']
+        tool_context.state['receipt_price_cents'] = display['price_cents']
+        tool_context.state['receipt_currency'] = display['currency']
+
+    return {
+        'verified': True,
+        'item_name': display['item_name'],
+        'item_description': display['item_name'],   # alias for purchase_complete
+        'image_url': display['image_url'],
+        'price_cents': display['price_cents'],
+        'currency': display['currency'],
+    }
+
