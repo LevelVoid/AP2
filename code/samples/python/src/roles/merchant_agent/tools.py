@@ -66,6 +66,41 @@ from pydantic import ValidationError
 from . import storage
 
 
+# ---------------------------------------------------------------------------
+# Catalog integration helpers (Task 1)
+# ---------------------------------------------------------------------------
+
+def get_catalog_item(item_id: str) -> dict | None:
+  """Return the poisoned-catalog entry for *item_id*, or None.
+
+  The catalog is keyed by string item ID.  Both numeric IDs (e.g. ``168``)
+  and their string equivalents (``"168"``) are accepted.
+  """
+  return storage.get_product(str(item_id))
+
+
+def drop_item(item_id: str, stock: int = 10) -> bool:
+  """Flip the native availability flag of a catalog item to True.
+
+  This is the same operation performed by the trigger-server's
+  ``POST /trigger-price-drop?item_id=<id>&stock=<n>`` endpoint — it
+  updates the in-memory catalog so that subsequent ``check_product``
+  calls return ``available=True``.
+
+  Exposed as a module-level function so that the automation script
+  (``scripts/run_baseline_benchmark.py``) can call it directly, and so
+  that the trigger-server HTTP route can delegate here.
+
+  Args:
+    item_id: String form of the catalog ``id`` field.
+    stock: Positive integer stock count (default 10).
+
+  Returns:
+    True if the item was found and updated, False otherwise.
+  """
+  return storage.set_product_available(str(item_id), available=True, stock=stock)
+
+
 _PAYMENT_PROCESSOR_URL = (
     "http://localhost:8003/a2a/merchant_payment_processor_agent"
 )
@@ -208,6 +243,13 @@ async def create_checkout(
 
   risk_data = storage.get_risk_data(updater.context_id)
 
+  # Enrich checkout artifact with catalog metadata when available.
+  catalog_entry = get_catalog_item(cart_id) or get_catalog_item(
+      cart_data.get("item_label", "")
+  )
+  image_url = catalog_entry.get("image", "") if catalog_entry else ""
+  item_description = catalog_entry.get("description", "") if catalog_entry else ""
+
   await updater.add_artifact([
       Part(
           root=DataPart(
@@ -217,6 +259,8 @@ async def create_checkout(
                       "checkout_jwt": checkout_jwt,
                       "checkout_hash": checkout_hash,
                       "item_label": cart_data.get("item_label", ""),
+                      "item_description": item_description,
+                      "image_url": image_url,
                       "amount": cart_data["amount"],
                       "amount_cents": amount_cents,
                       "currency": cart_data.get("currency", "USD"),

@@ -69,6 +69,7 @@ def run_agent_blocking(
     *,
     executor: BaseServerExecutor,
     rpc_url: str,
+    extra_routes: list | None = None,
 ) -> None:
   """Launches a Uvicorn server for an agent and block the current thread.
 
@@ -77,13 +78,17 @@ def run_agent_blocking(
       agent_card: The AgentCard object describing the agent.
       executor: The AgentExecutor that processes A2A requests.
       rpc_url: The base URL path at which to mount the JSON-RPC handler.
+      extra_routes: Optional list of additional Starlette ``Route`` objects to
+        mount on the application alongside the A2A handler.
   """
   # Add a file handler to the logger for watch.log.
   logger = logging.getLogger(__name__)
   logger.addHandler(watch_log.create_file_handler())
 
   # Build the Starlette app and add middlewares.
-  app = _build_starlette_app(agent_card, executor=executor, rpc_url=rpc_url)
+  app = _build_starlette_app(
+      agent_card, executor=executor, rpc_url=rpc_url, extra_routes=extra_routes
+  )
   _add_middlewares(app, logger)
 
   # Start the server.
@@ -176,7 +181,11 @@ class _LoggingMiddleware(BaseHTTPMiddleware):
 
 
 def _build_starlette_app(
-    agent_card: AgentCard, *, executor, rpc_url
+    agent_card: AgentCard,
+    *,
+    executor,
+    rpc_url,
+    extra_routes: list | None = None,
 ) -> A2AStarletteApplication:
   """Create and return a ready-to-serve Starlette ASGI application.
 
@@ -184,6 +193,7 @@ def _build_starlette_app(
       agent_card: The AgentCard object describing the agent.
       executor: The AgentExecutor that processes A2A requests.
       rpc_url: The base URL path at which to mount the JSON-RPC handler.
+      extra_routes: Optional list of additional Starlette ``Route`` objects.
 
   Returns:
       An instance of A2AStarletteApplication.
@@ -205,6 +215,13 @@ def _build_starlette_app(
   ).build(
       rpc_url=rpc_url, agent_card_url=f"{rpc_url}{AGENT_CARD_WELL_KNOWN_PATH}"
   )
+
+  # Mount any caller-supplied extra routes.
+  if extra_routes:
+    from starlette.routing import Router
+    for route in extra_routes:
+      app.router.routes.insert(0, route)
+
   return app
 
 
