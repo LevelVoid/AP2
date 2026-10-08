@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import time
+import re
 
 from typing import Any
 
@@ -49,9 +50,11 @@ from google.adk.tools.tool_context import ToolContext
 from jwcrypto.jwk import JWK
 
 from .remote_agents import credentials_provider_client, merchant_agent_client
-
+from common.hive_interceptor import HIVEInterceptor
 
 _logger = logging.getLogger("shopping_agent")
+
+hive_interceptor = HIVEInterceptor()
 
 DEMO_MERCHANT = Merchant(
     id="merchant_1",
@@ -203,6 +206,71 @@ def create_payment_mandate(tool_context: ToolContext) -> str:
       "amount_cents", int(checkout_data["amount"] * 100)
   )
   currency = checkout_data.get("currency", "USD")
+
+  # HIVE Pre-Flight Intercept
+  user_intent_string = tool_context.state.get("user_prompt", "")
+  _logger.error(f"HIVE DIAG: initial user_intent_string from state='{user_intent_string}'")
+  if not user_intent_string:
+    try:
+      if hasattr(tool_context, "messages"):
+        _logger.error(f"HIVE DIAG: tool_context has messages: {tool_context.messages}")
+        for msg in tool_context.messages:
+          if getattr(msg, "role", "") == "user":
+            user_intent_string = getattr(msg, "content", "")
+            break
+      if not user_intent_string and hasattr(tool_context, "history"):
+        _logger.error(f"HIVE DIAG: tool_context has history: {tool_context.history}")
+        for msg in tool_context.history:
+          if getattr(msg, "role", "") == "user":
+            user_intent_string = getattr(msg, "content", "")
+            break
+    except Exception as e:
+      _logger.error(f"HIVE DIAG: Exception extracting messages: {e}")
+      pass
+  
+  if not user_intent_string:
+      _logger.error(f"HIVE DIAG: tool_context.state keys: {list(tool_context.state.keys())}")
+      user_intent_string = "buy something under $100"
+
+  _logger.error(f"HIVE DIAG: final user_intent_string='{user_intent_string}'")
+
+  budget = 1000.0
+  matches = re.findall(r"\$(\d+(?:\.\d+)?)", user_intent_string)
+  if matches:
+      budget = float(matches[0])
+  else:
+      matches = re.findall(r"(\d+(?:\.\d+)?)", user_intent_string)
+      if matches:
+          budget = float(matches[-1])
+          
+  item_description = checkout_data.get("item_label", "Unknown item")
+  cart_id = tool_context.state.get("chosen_cart_id")
+  available_carts = tool_context.state.get("available_carts", [])
+  for cart in available_carts:
+      if cart.get("cart_id") == cart_id:
+          item_description = cart.get("item_label", item_description)
+          break
+
+  candidate_payload = {
+      "amount": amount_cents / 100.0,
+      "currency": currency,
+      "item_description": item_description
+  }
+
+  _logger.error(f"HIVE DIAG: verifying mandate max budget={budget} currency={currency} candidate={candidate_payload}")
+
+  result = hive_interceptor.verify_transaction(
+      user_intent_string=user_intent_string,
+      mandate_max_amount=budget,
+      mandate_currency=currency,
+      candidate_payload=candidate_payload
+  )
+  
+  _logger.error(f"HIVE DIAG: result={result}")
+
+  if not result["is_authorized"]:
+      _logger.error(f"HIVE DIAG: Unauthorized! Raising RuntimeError.")
+      raise RuntimeError(f"HIVE Intercept: {result['reason']}")
 
   now = int(time.time())
   payload = PaymentMandate(
