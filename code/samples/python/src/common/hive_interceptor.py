@@ -19,7 +19,7 @@ class HIVEInterceptor:
     Enforces rules to prevent Confused Deputy Attacks and prompt injection scenarios.
     """
     
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2", threshold: float = 0.75):
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2", threshold: float = 0.65):
         """
         Initializes the HIVEInterceptor with a local SentenceTransformer model.
 

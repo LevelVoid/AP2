@@ -902,8 +902,8 @@ def create_payment_presentation(
         
         if not hive_result.get("is_authorized", False):
             # If verification fails, clear any old mandate chain from state
-            tool_context.state.pop('temp:payment_mandate_chain', None)
-            tool_context.state.pop('temp:payment_nonce', None)
+            tool_context.state['temp:payment_mandate_chain'] = None
+            tool_context.state['temp:payment_nonce'] = None
             raise ValueError(f"HIVE Intercept: {hive_result.get('reason', 'Verification failed')}")
         # ---------------------------------------------------------
 
