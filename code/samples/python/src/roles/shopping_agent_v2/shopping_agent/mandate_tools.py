@@ -17,6 +17,14 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import sys
+import os
+try:
+    from common.hive_interceptor import HIVEInterceptor
+except ImportError:
+    # Handle if run_server.py changes sys.path
+    sys.path.append(os.path.join(os.path.dirname(__file__), "../../../.."))
+    from common.hive_interceptor import HIVEInterceptor
 from ap2.sdk.constraints import MandateContext, check_payment_constraints
 from ap2.sdk.generated.checkout_mandate import CheckoutMandate
 from ap2.sdk.generated.open_checkout_mandate import (
@@ -833,6 +841,72 @@ def create_payment_presentation(
             else DEMO_MERCHANT
         )
 
+        # ---------------------------------------------------------
+        # HIVE INTERCEPTOR INTEGRATION
+        # ---------------------------------------------------------
+        if not tool_context:
+            raise ValueError('tool_context is required')
+            
+        open_payment_mandate_id = tool_context.state.get('app:open_payment_mandate_id', '')
+        open_checkout_mandate_id = tool_context.state.get('app:open_checkout_mandate_id', '')
+        if not open_payment_mandate_id or not open_checkout_mandate_id:
+            raise RuntimeError('open_payment_mandate_id and open_checkout_mandate_id are required in state')
+            
+        open_payment_mandate_token = _resolve_mandate(open_payment_mandate_id, 'open_pay_')
+        open_checkout_mandate_token = _resolve_mandate(open_checkout_mandate_id, 'open_chk_')
+        
+        agent_provider_pub = JWK.from_json(_get_agent_provider_signing_key().export_public())
+        constraints = _extract_mandate_constraints(open_payment_mandate_token, open_checkout_mandate_token, agent_provider_pub)
+        
+        mandate_max_amount = constraints.get('price_cap', float('inf'))
+        mandate_currency = constraints.get('currency', 'USD')
+        
+        # Get authorized item titles from the open mandate to form a robust intent string
+        authorized_titles = []
+        for line_item in constraints.get('line_items', []):
+            for acc_item in line_item.get('acceptable_items', []):
+                authorized_titles.append(acc_item.get('title', 'Unknown Item'))
+        
+        user_intent_string = tool_context.state.get("user_prompt", "")
+        if not user_intent_string:
+            user_intent_string = "I authorize a purchase for " + " or ".join(authorized_titles) + f". My maximum budget is ${mandate_max_amount}."
+            
+        # Decode the candidate checkout_jwt to find out what item is ACTUALLY in the cart
+        # we check the temp state or disk as in create_checkout_presentation
+        resolved_jwt = ""
+        stored = tool_context.state.get('temp:checkout_jwt', '')
+        if stored: resolved_jwt = stored
+        elif checkout_hash:
+            disk = _load_persisted_mandate(f'checkout_jwt_{checkout_hash}')
+            if disk: resolved_jwt = disk
+            
+        actual_item_description = "Unknown Item"
+        if resolved_jwt:
+            display_fields = _extract_receipt_display_fields(resolved_jwt)
+            if display_fields.get("item_name"):
+                actual_item_description = display_fields["item_name"]
+                
+        candidate_payload = {
+            "amount": amount_cents / 100.0,
+            "currency": currency,
+            "item_description": actual_item_description
+        }
+        
+        hive_interceptor = HIVEInterceptor()
+        hive_result = hive_interceptor.verify_transaction(
+            user_intent_string=user_intent_string,
+            mandate_max_amount=mandate_max_amount,
+            mandate_currency=mandate_currency,
+            candidate_payload=candidate_payload
+        )
+        
+        if not hive_result.get("is_authorized", False):
+            # If verification fails, clear any old mandate chain from state
+            tool_context.state.pop('temp:payment_mandate_chain', None)
+            tool_context.state.pop('temp:payment_nonce', None)
+            raise ValueError(f"HIVE Intercept: {hive_result.get('reason', 'Verification failed')}")
+        # ---------------------------------------------------------
+
         instrument = (
             X402_PAYMENT_INSTRUMENT
             if _PAYMENT_METHOD == 'x402'
@@ -843,18 +917,6 @@ def create_payment_presentation(
             payee=payee,
             payment_amount=Amount(amount=amount_cents, currency=currency),
             payment_instrument=instrument,
-        )
-
-        if not tool_context:
-            raise ValueError('tool_context is required')
-        open_payment_mandate_id = tool_context.state.get(
-            'app:open_payment_mandate_id',
-            '',
-        )
-        if not open_payment_mandate_id:
-            raise ValueError('open_payment_mandate_id is required')
-        open_payment_mandate_token = _resolve_mandate(
-            open_payment_mandate_id, 'open_pay_'
         )
 
         agent_key = _get_agent_signing_key()
