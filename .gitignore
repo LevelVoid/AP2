@@ -218,3 +218,5 @@ local.properties
 *.hprof
 
 *.code-workspace
+diag.py
+code/samples/python/benchmark_results.json
