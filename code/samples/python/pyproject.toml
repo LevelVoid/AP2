@@ -24,7 +24,9 @@ dependencies = [
     "cryptography==46.0.5",
     "web3==7.15.0",
     "openai>=1.0.0",
-    "litellm>=1.75.5"
+    "litellm>=1.75.5",
+    "sentence-transformers>=2.2.0",
+    "torch"
 ]
 keywords = ["payments", "a2a", "ap2"]
 readme = "README.md"
