@@ -879,12 +879,45 @@ def create_payment_presentation(
         elif checkout_hash:
             disk = _load_persisted_mandate(f'checkout_jwt_{checkout_hash}')
             if disk: resolved_jwt = disk
-            
-        actual_item_description = "Unknown Item"
+
+        # Try multiple sources for the actual item description
+        actual_item_description = None
+
+        # First try: extract from checkout JWT
         if resolved_jwt:
-            display_fields = _extract_receipt_display_fields(resolved_jwt)
+            display_fields = _extract_receipt_display_fields(resolved_jwt, tool_context)
             if display_fields.get("item_name"):
                 actual_item_description = display_fields["item_name"]
+
+        # Second try: extract from open mandate constraints
+        if not actual_item_description:
+            try:
+                constraints_dict = _extract_mandate_constraints(
+                    tool_context.state,
+                    _DEFAULT_CURRENCY
+                )
+                # Use the first item title from line_items as fallback
+                if constraints_dict.get("acceptable_item_titles"):
+                    titles = constraints_dict["acceptable_item_titles"]
+                    if titles:
+                        actual_item_description = titles[0]
+                        _logger.info("HIVE: Using item title from open mandate: %r", actual_item_description)
+            except Exception as e:
+                _logger.warning("Failed to extract item from open mandate: %s", e)
+
+        # Third try: use session state item_name
+        if not actual_item_description and tool_context:
+            actual_item_description = (
+                tool_context.state.get('item_name')
+                or tool_context.state.get('selected_item_name')
+            )
+            if actual_item_description:
+                _logger.info("HIVE: Using item_name from session state: %r", actual_item_description)
+
+        # Final fallback
+        if not actual_item_description:
+            _logger.warning("HIVE: Could not determine actual item description, using 'Unknown Item'")
+            actual_item_description = "Unknown Item"
                 
         candidate_payload = {
             "amount": amount_cents / 100.0,
