@@ -861,84 +861,90 @@ def create_payment_presentation(
         mandate_max_amount = constraints.get('price_cap', float('inf'))
         mandate_currency = constraints.get('currency', 'USD')
         
-        # Get authorized item titles from the open mandate to form a robust intent string
-        authorized_titles = []
-        for line_item in constraints.get('line_items', []):
-            for acc_item in line_item.get('acceptable_items', []):
-                authorized_titles.append(acc_item.get('title', 'Unknown Item'))
-        
-        user_intent_string = tool_context.state.get("user_prompt", "")
-        if not user_intent_string:
-            user_intent_string = "I authorize a purchase for " + " or ".join(authorized_titles) + f". My maximum budget is ${mandate_max_amount}."
-            
-        # Decode the candidate checkout_jwt to find out what item is ACTUALLY in the cart
-        # we check the temp state or disk as in create_checkout_presentation
-        resolved_jwt = ""
-        stored = tool_context.state.get('temp:checkout_jwt', '')
-        if stored: resolved_jwt = stored
-        elif checkout_hash:
-            disk = _load_persisted_mandate(f'checkout_jwt_{checkout_hash}')
-            if disk: resolved_jwt = disk
+        # ========================================================================
+        # HIVE INTERCEPTOR DISABLED - Researching baseline vulnerabilities
+        # ========================================================================
+        # To enable HIVE defense, uncomment the code block below
+        # ========================================================================
 
-        # Try multiple sources for the actual item description
-        actual_item_description = None
-
-        # First try: extract from checkout JWT
-        if resolved_jwt:
-            display_fields = _extract_receipt_display_fields(resolved_jwt, tool_context)
-            if display_fields.get("item_name"):
-                actual_item_description = display_fields["item_name"]
-
-        # Second try: extract from open mandate constraints
-        if not actual_item_description:
-            try:
-                constraints_dict = _extract_mandate_constraints(
-                    tool_context.state,
-                    _DEFAULT_CURRENCY
-                )
-                # Use the first item title from line_items as fallback
-                if constraints_dict.get("acceptable_item_titles"):
-                    titles = constraints_dict["acceptable_item_titles"]
-                    if titles:
-                        actual_item_description = titles[0]
-                        _logger.info("HIVE: Using item title from open mandate: %r", actual_item_description)
-            except Exception as e:
-                _logger.warning("Failed to extract item from open mandate: %s", e)
-
-        # Third try: use session state item_name
-        if not actual_item_description and tool_context:
-            actual_item_description = (
-                tool_context.state.get('item_name')
-                or tool_context.state.get('selected_item_name')
-            )
-            if actual_item_description:
-                _logger.info("HIVE: Using item_name from session state: %r", actual_item_description)
-
-        # Final fallback
-        if not actual_item_description:
-            _logger.warning("HIVE: Could not determine actual item description, using 'Unknown Item'")
-            actual_item_description = "Unknown Item"
-                
-        candidate_payload = {
-            "amount": amount_cents / 100.0,
-            "currency": currency,
-            "item_description": actual_item_description
-        }
-        
-        hive_interceptor = HIVEInterceptor()
-        hive_result = hive_interceptor.verify_transaction(
-            user_intent_string=user_intent_string,
-            mandate_max_amount=mandate_max_amount,
-            mandate_currency=mandate_currency,
-            candidate_payload=candidate_payload
-        )
-        
-        if not hive_result.get("is_authorized", False):
-            # If verification fails, clear any old mandate chain from state
-            tool_context.state['temp:payment_mandate_chain'] = None
-            tool_context.state['temp:payment_nonce'] = None
-            raise ValueError(f"HIVE Intercept: {hive_result.get('reason', 'Verification failed')}")
-        # ---------------------------------------------------------
+        # # Get authorized item titles from the open mandate to form a robust intent string
+        # authorized_titles = []
+        # for line_item in constraints.get('line_items', []):
+        #     for acc_item in line_item.get('acceptable_items', []):
+        #         authorized_titles.append(acc_item.get('title', 'Unknown Item'))
+        #
+        # user_intent_string = tool_context.state.get("user_prompt", "")
+        # if not user_intent_string:
+        #     user_intent_string = "I authorize a purchase for " + " or ".join(authorized_titles) + f". My maximum budget is ${mandate_max_amount}."
+        #
+        # # Decode the candidate checkout_jwt to find out what item is ACTUALLY in the cart
+        # # we check the temp state or disk as in create_checkout_presentation
+        # resolved_jwt = ""
+        # stored = tool_context.state.get('temp:checkout_jwt', '')
+        # if stored: resolved_jwt = stored
+        # elif checkout_hash:
+        #     disk = _load_persisted_mandate(f'checkout_jwt_{checkout_hash}')
+        #     if disk: resolved_jwt = disk
+        #
+        # # Try multiple sources for the actual item description
+        # actual_item_description = None
+        #
+        # # First try: extract from checkout JWT
+        # if resolved_jwt:
+        #     display_fields = _extract_receipt_display_fields(resolved_jwt, tool_context)
+        #     if display_fields.get("item_name"):
+        #         actual_item_description = display_fields["item_name"]
+        #
+        # # Second try: extract from open mandate constraints
+        # if not actual_item_description:
+        #     try:
+        #         constraints_dict = _extract_mandate_constraints(
+        #             tool_context.state,
+        #             _DEFAULT_CURRENCY
+        #         )
+        #         # Use the first item title from line_items as fallback
+        #         if constraints_dict.get("acceptable_item_titles"):
+        #             titles = constraints_dict["acceptable_item_titles"]
+        #             if titles:
+        #                 actual_item_description = titles[0]
+        #                 _logger.info("HIVE: Using item title from open mandate: %r", actual_item_description)
+        #     except Exception as e:
+        #         _logger.warning("Failed to extract item from open mandate: %s", e)
+        #
+        # # Third try: use session state item_name
+        # if not actual_item_description and tool_context:
+        #     actual_item_description = (
+        #         tool_context.state.get('item_name')
+        #         or tool_context.state.get('selected_item_name')
+        #     )
+        #     if actual_item_description:
+        #         _logger.info("HIVE: Using item_name from session state: %r", actual_item_description)
+        #
+        # # Final fallback
+        # if not actual_item_description:
+        #     _logger.warning("HIVE: Could not determine actual item description, using 'Unknown Item'")
+        #     actual_item_description = "Unknown Item"
+        #
+        # candidate_payload = {
+        #     "amount": amount_cents / 100.0,
+        #     "currency": currency,
+        #     "item_description": actual_item_description
+        # }
+        #
+        # hive_interceptor = HIVEInterceptor()
+        # hive_result = hive_interceptor.verify_transaction(
+        #     user_intent_string=user_intent_string,
+        #     mandate_max_amount=mandate_max_amount,
+        #     mandate_currency=mandate_currency,
+        #     candidate_payload=candidate_payload
+        # )
+        #
+        # if not hive_result.get("is_authorized", False):
+        #     # If verification fails, clear any old mandate chain from state
+        #     tool_context.state['temp:payment_mandate_chain'] = None
+        #     tool_context.state['temp:payment_nonce'] = None
+        #     raise ValueError(f"HIVE Intercept: {hive_result.get('reason', 'Verification failed')}")
+        # ========================================================================
 
         instrument = (
             X402_PAYMENT_INSTRUMENT
