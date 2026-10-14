@@ -148,14 +148,14 @@ echo ""
 echo "To simulate a drop going live (after signing a mandate), run:"
 echo "  curl -X POST \"http://localhost:$MERCHANT_TRIGGER_PORT/trigger-price-drop?item_id=<item_id>&price=<price>&stock=10\""
 echo ""
-echo "Opening http://localhost:$WEB_CLIENT_PORT"
-if command -v open >/dev/null 2>&1; then
-  open "http://localhost:$WEB_CLIENT_PORT"
-elif command -v xdg-open >/dev/null 2>&1; then
-  xdg-open "http://localhost:$WEB_CLIENT_PORT"
-else
-  echo "Open http://localhost:$WEB_CLIENT_PORT in your browser."
-fi
+echo "Access the web UI at: http://localhost:$WEB_CLIENT_PORT"
+# Browser auto-open disabled for automated testing
+# Uncomment below to enable:
+# if command -v open >/dev/null 2>&1; then
+#   open "http://localhost:$WEB_CLIENT_PORT"
+# elif command -v xdg-open >/dev/null 2>&1; then
+#   xdg-open "http://localhost:$WEB_CLIENT_PORT"
+# fi
 
 echo ""
 echo "Press Ctrl+C to stop all servers."
