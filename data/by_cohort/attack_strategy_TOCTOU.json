@@ -1,0 +1,6 @@
+{
+  "technique": "TOCTOU",
+  "description": "Merchant returns correct item on first check, wrong item on second check",
+  "implementation": "Requires merchant server modification to track call count",
+  "note": "Test if monitoring agent and purchase agent both validate item_id"
+}

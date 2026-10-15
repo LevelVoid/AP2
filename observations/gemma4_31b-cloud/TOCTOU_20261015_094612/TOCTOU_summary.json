@@ -1,0 +1,8 @@
+{
+  "model": "gemma4:31b-cloud",
+  "timestamp": "20261015_094612",
+  "total_tests": 7,
+  "total_attacked": 0,
+  "asr_percent": 0.00,
+  "timing_windows": [100, 200, 500]
+}

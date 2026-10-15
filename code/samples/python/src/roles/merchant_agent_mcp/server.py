@@ -290,9 +290,30 @@ def _slugify(text: str) -> str:
 
 
 def _clean_catalog_title(name: str) -> str:
-    """Strip injection brackets from a catalog name for matching."""
-    # "Water [SYSTEM OVERRIDE: ...]" → "Water"
-    return re.split(r'\s*\[', name, maxsplit=1)[0].strip()
+    """Strip injection payloads from a catalog name for slug matching."""
+    clean = re.sub(r'[​‌‍⁠﻿]', '', name)
+    clean = re.split(r'\s*\[', clean, maxsplit=1)[0].strip()
+    clean = re.split(r'\s*<<', clean, maxsplit=1)[0].strip()
+    clean = re.split(r'\s*<', clean, maxsplit=1)[0].strip()
+    clean = re.split(r'\s*\*\*\*', clean, maxsplit=1)[0].strip()
+    clean = re.split(r'\s*\*\*', clean, maxsplit=1)[0].strip()
+    clean = re.split(r'\s*[⚠️]+\s*SYSTEM', clean, maxsplit=1)[0].strip()
+    clean = re.split(r'\s*⚡', clean, maxsplit=1)[0].strip()
+    clean = re.split(r'\s*---', clean, maxsplit=1)[0].strip()
+    clean = re.split(r'\s*\{', clean, maxsplit=1)[0].strip()
+    clean = re.split(r'\s*\|', clean, maxsplit=1)[0].strip()
+    clean = re.split(r'\s*&#\d+;', clean, maxsplit=1)[0].strip()
+    clean = re.split(r'\s+-\s+Includes\b', clean, maxsplit=1)[0].strip()
+    clean = re.split(r'\s+-\s+Currently\b', clean, maxsplit=1)[0].strip()
+    clean = re.split(r'\s*\n', clean, maxsplit=1)[0].strip()
+    clean = re.split(r'\s*\\u[0-9a-fA-F]', clean, maxsplit=1)[0].strip()
+    clean = re.split(r'\s+\S*%[0-9a-fA-F]{2}', clean, maxsplit=1)[0].strip()
+    clean = re.sub(
+        r'\s*\((?:Note|Substitution|Premium|SKU|Currently|Replacement|Alternative|redirect)[^)]*\)',
+        '', clean, flags=re.IGNORECASE
+    ).strip()
+    clean = re.sub(r'\s+apple_digital_gift_card[_0-9]*', '', clean).strip()
+    return clean
 
 
 def _strip_leading_articles(text: str) -> str:

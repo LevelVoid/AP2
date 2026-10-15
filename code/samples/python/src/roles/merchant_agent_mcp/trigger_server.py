@@ -127,7 +127,99 @@ async def reset_state(request: Request) -> Response:
         mcp_module._TEMP_INVENTORY.clear()
     except Exception:
         pass
-    return JSONResponse({'ok': True, 'message': 'trigger + inventory reset'})
+    # Clear cart store (in-memory) so stale checkouts don't leak across iterations
+    try:
+        mcp_module._CART_STORE.clear()
+    except Exception:
+        pass
+    # Clear token store (on-disk) so payment tokens don't carry over
+    token_path = os.environ.get(
+        'AP2_TOKEN_STORE_PATH',
+        str(_TEMP_DB / 'ap2_token_store.json'),
+    )
+    try:
+        with open(token_path, 'w') as f:
+            json.dump({}, f)
+    except OSError:
+        pass
+    # Clear recurrence tracking and stale mandate/checkout files
+    # Exclude agent signing keys (agent_signing_key.*) from deletion
+    for pattern in ('recurrence_*.json', '*.sdjwt', 'checkout_*.json'):
+        for p in _TEMP_DB.glob(pattern):
+            if p.stem.startswith('agent_signing_key') or p.stem.startswith('merchant_signing_key'):
+                continue
+            try:
+                p.unlink()
+            except OSError:
+                pass
+    return JSONResponse({'ok': True, 'message': 'trigger + inventory + cart + tokens reset'})
+
+
+async def reload_catalog(request: Request) -> Response:
+    """Hot-reload the poisoned catalog without restarting the server.
+
+    POST /reload-catalog?cohort=E_Advanced
+    Reloads _POISONED_CATALOG in the MCP module so the agent sees new
+    attack items without losing its MCP session.
+    """
+    qs = parse_qs(urlparse(str(request.url)).query)
+    cohort = (qs.get("cohort") or [None])[0]
+
+    if not cohort:
+        return JSONResponse({"error": "cohort query param required"}, status_code=400)
+
+    os.environ["CATALOG_COHORT"] = cohort
+    new_catalog = mcp_module._load_poisoned_catalog()
+    mcp_module._POISONED_CATALOG.clear()
+    mcp_module._POISONED_CATALOG.update(new_catalog)
+
+    # Also clear transient state for clean iteration
+    try:
+        mcp_module._TEMP_INVENTORY.clear()
+    except Exception:
+        pass
+    try:
+        mcp_module._CART_STORE.clear()
+    except Exception:
+        pass
+
+    inv_path = os.environ.get(
+        'MERCHANT_INVENTORY_PATH',
+        str(_TEMP_DB / 'merchant_inventory.json'),
+    )
+    try:
+        with open(inv_path, 'w') as f:
+            json.dump({}, f)
+    except OSError:
+        pass
+    os.makedirs(os.path.dirname(_TRIGGER_STATE_PATH) or '.', exist_ok=True)
+    with open(_TRIGGER_STATE_PATH, 'w') as f:
+        json.dump({}, f)
+    token_path = os.environ.get(
+        'AP2_TOKEN_STORE_PATH',
+        str(_TEMP_DB / 'ap2_token_store.json'),
+    )
+    try:
+        with open(token_path, 'w') as f:
+            json.dump({}, f)
+    except OSError:
+        pass
+    # Clear stale mandate/checkout files (keep signing keys)
+    for pattern in ('recurrence_*.json', '*.sdjwt', 'checkout_*.json'):
+        for p in _TEMP_DB.glob(pattern):
+            if p.stem.startswith('agent_signing_key') or p.stem.startswith('merchant_signing_key'):
+                continue
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
+    return JSONResponse({
+        "ok": True,
+        "cohort": cohort,
+        "catalog_size": len(new_catalog),
+        "message": f"Catalog reloaded with cohort {cohort} ({len(new_catalog)} items)",
+    })
 
 
 async def health(request: Request) -> Response:
@@ -164,6 +256,7 @@ routes = [
     Route("/trigger-price-drop", trigger_price_drop, methods=["POST", "OPTIONS"]),
     Route("/state", state_handler, methods=["GET", "OPTIONS"]),
     Route("/reset-state", reset_state, methods=["POST", "OPTIONS"]),
+    Route("/reload-catalog", reload_catalog, methods=["POST", "OPTIONS"]),
     Route("/", health, methods=["GET"]),
     Route("/health", health, methods=["GET"]),
     Mount("/mcp", app=mcp_app),
