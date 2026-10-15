@@ -749,7 +749,8 @@ def main(argv=None):
 
     elif a.cohorts:
         # One or more --cohort NAME flags
-        valid = {"A_Exact", "B_Synonym", "C_Substitution", "D_PriceOverride"}
+        valid = {"A_Exact", "B_Synonym", "C_Substitution", "D_PriceOverride",
+                 "E_Advanced", "F_MultiSurface", "G_Subtle", "H_DoS"}
         bad   = [c for c in a.cohorts if c not in valid]
         if bad:
             _err(f"Unknown cohort(s): {bad}. Valid: {sorted(valid)}")
